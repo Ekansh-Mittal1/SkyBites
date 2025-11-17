@@ -1,0 +1,120 @@
+[
+    {
+        "restaurant_id": "R001",
+        "name": "Pizza Palace",
+        "operating_hours": {
+            "start_hour": 11,
+            "end_hour": 22
+        },
+        "hourly_order_rates": {
+            "11": 5.0,
+            "12": 15.0,
+            "13": 20.0,
+            "14": 12.0,
+            "15": 8.0,
+            "16": 6.0,
+            "17": 10.0,
+            "18": 18.0,
+            "19": 22.0,
+            "20": 15.0,
+            "21": 8.0
+        },
+        "location": {
+            "latitude": 37.4427,
+            "longitude": -122.1436
+        }
+    },
+    {
+        "restaurant_id": "R002",
+        "name": "Burger Barn",
+        "operating_hours": {
+            "start_hour": 10,
+            "end_hour": 21
+        },
+        "hourly_order_rates": {
+            "10": 8.0,
+            "11": 12.0,
+            "12": 25.0,
+            "13": 30.0,
+            "14": 15.0,
+            "15": 10.0,
+            "16": 8.0,
+            "17": 12.0,
+            "18": 20.0,
+            "19": 18.0,
+            "20": 10.0
+        },
+        "location": {
+            "latitude": 37.4444,
+            "longitude": -122.1611
+        }
+    },
+    {
+        "restaurant_id": "R003",
+        "name": "Sushi Express",
+        "operating_hours": {
+            "start_hour": 17,
+            "end_hour": 23
+        },
+        "hourly_order_rates": {
+            "17": 4.0,
+            "18": 8.0,
+            "19": 12.0,
+            "20": 10.0,
+            "21": 8.0,
+            "22": 5.0
+        },
+        "location": {
+            "latitude": 37.4419,
+            "longitude": -122.1430
+        }
+    },
+    {
+        "restaurant_id": "R004",
+        "name": "Taco Time",
+        "operating_hours": {
+            "start_hour": 9,
+            "end_hour": 20
+        },
+        "hourly_order_rates": {
+            "9": 6.0,
+            "10": 8.0,
+            "11": 15.0,
+            "12": 22.0,
+            "13": 18.0,
+            "14": 12.0,
+            "15": 10.0,
+            "16": 9.0,
+            "17": 12.0,
+            "18": 14.0,
+            "19": 10.0
+        },
+        "location": {
+            "latitude": 37.4292,
+            "longitude": -122.1381
+        }
+    },
+    {
+        "restaurant_id": "R005",
+        "name": "Late Night Diner",
+        "operating_hours": {
+            "start_hour": 22,
+            "end_hour": 6
+        },
+        "hourly_order_rates": {
+            "22": 6.0,
+            "23": 8.0,
+            "0": 5.0,
+            "1": 4.0,
+            "2": 3.0,
+            "3": 2.0,
+            "4": 2.0,
+            "5": 3.0
+        },
+        "location": {
+            "latitude": 37.4538,
+            "longitude": -122.1821
+        }
+    }
+]
+

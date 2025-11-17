@@ -1,0 +1,93 @@
+[
+    {
+        "destination_id": "D001",
+        "name": "Stanford Main Campus",
+        "location": {
+            "latitude": 37.4275,
+            "longitude": -122.1697
+        },
+        "proportion": 0.15
+    },
+    {
+        "destination_id": "D002",
+        "name": "Palo Alto Downtown",
+        "location": {
+            "latitude": 37.4419,
+            "longitude": -122.1430
+        },
+        "proportion": 0.12
+    },
+    {
+        "destination_id": "D003",
+        "name": "Menlo Park Residential",
+        "location": {
+            "latitude": 37.4538,
+            "longitude": -122.1821
+        },
+        "proportion": 0.10
+    },
+    {
+        "destination_id": "D004",
+        "name": "Stanford Shopping Center",
+        "location": {
+            "latitude": 37.4444,
+            "longitude": -122.1611
+        },
+        "proportion": 0.13
+    },
+    {
+        "destination_id": "D005",
+        "name": "University Avenue",
+        "location": {
+            "latitude": 37.4427,
+            "longitude": -122.1436
+        },
+        "proportion": 0.11
+    },
+    {
+        "destination_id": "D006",
+        "name": "East Palo Alto",
+        "location": {
+            "latitude": 37.4688,
+            "longitude": -122.1411
+        },
+        "proportion": 0.08
+    },
+    {
+        "destination_id": "D007",
+        "name": "Stanford Research Park",
+        "location": {
+            "latitude": 37.4150,
+            "longitude": -122.1494
+        },
+        "proportion": 0.09
+    },
+    {
+        "destination_id": "D008",
+        "name": "Palo Alto Hills",
+        "location": {
+            "latitude": 37.4000,
+            "longitude": -122.1500
+        },
+        "proportion": 0.07
+    },
+    {
+        "destination_id": "D009",
+        "name": "California Avenue",
+        "location": {
+            "latitude": 37.4292,
+            "longitude": -122.1381
+        },
+        "proportion": 0.10
+    },
+    {
+        "destination_id": "D010",
+        "name": "Stanford Medical Center",
+        "location": {
+            "latitude": 37.4331,
+            "longitude": -122.1744
+        },
+        "proportion": 0.05
+    }
+]
+
