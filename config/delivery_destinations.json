@@ -78,7 +78,7 @@
             "latitude": 37.425168,
             "longitude": -122.157993
         },
-        "proportion": 0.10
+        "proportion": 0.07
     },
     {
         "destination_id": "D010",
@@ -90,13 +90,13 @@
         "proportion": 0.05
     },
     {
-        "destination_id": "D010",
+        "destination_id": "D011",
         "name": "The Row",
         "location": {
             "latitude": 37.421890,
             "longitude": -122.168498
         },
-        "proportion": 0.05
+        "proportion": 0.03
     }
 ]
 

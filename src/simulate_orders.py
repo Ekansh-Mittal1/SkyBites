@@ -187,12 +187,14 @@ def generate_orders_for_restaurant(
             delivery_lat = None
             delivery_lon = None
             delivery_location_id = None
+            delivery_location_name = None
             
             if delivery_destinations:
                 delivery_dest = assign_delivery_location(delivery_destinations)
                 delivery_lat = delivery_dest['location']['latitude']
                 delivery_lon = delivery_dest['location']['longitude']
                 delivery_location_id = delivery_dest['destination_id']
+                delivery_location_name = delivery_dest['name']
             
             order = {
                 'order_id': f'ORD_{current_order_id:06d}',
@@ -205,7 +207,8 @@ def generate_orders_for_restaurant(
                 'restaurant_location_id': str(restaurant_id),
                 'delivery_latitude': delivery_lat,
                 'delivery_longitude': delivery_lon,
-                'delivery_location_id': delivery_location_id
+                'delivery_location_id': delivery_location_id,
+                'delivery_location_name': delivery_location_name
             }
             
             orders.append(order)
@@ -265,7 +268,7 @@ def simulate_orders(
         'order_id', 'restaurant_id', 'restaurant_name', 
         'timestamp_minutes', 'hour_of_day',
         'restaurant_latitude', 'restaurant_longitude', 'restaurant_location_id',
-        'delivery_latitude', 'delivery_longitude', 'delivery_location_id'
+        'delivery_latitude', 'delivery_longitude', 'delivery_location_id', 'delivery_location_name'
     ]
     
     with open(output_path, 'w', newline='') as csvfile:
@@ -285,8 +288,8 @@ def main():
         'config',
         type=str,
         nargs='?',
-        default='config/restaurants_config.json',
-        help='Path to restaurant configuration JSON file (default: config/restaurants_config.json)'
+        default='config/restaurants.json',
+        help='Path to restaurant configuration JSON file (default: config/restaurants.json)'
     )
     parser.add_argument(
         '-o', '--output',
