@@ -1,0 +1,172 @@
+[
+    {
+        "restaurant_id": "R001",
+        "name": "The Axe and Palm",
+        "operating_hours": {
+            "start_hour": 11,
+            "end_hour": 2
+        },
+        "hourly_order_rates": {
+            "11": 3.0,
+            "12": 5.0,
+            "13": 6.0,
+            "14": 4.0,
+            "15": 3.0,
+            "16": 4.0,
+            "17": 5.0,
+            "18": 6.0,
+            "19": 8.0,
+            "20": 12.0,
+            "21": 18.0,
+            "22": 20.0,
+            "23": 22.0,
+            "0": 18.0,
+            "1": 12.0
+        },
+        "location": {
+            "latitude": 37.4241,
+            "longitude": -122.1708
+        }
+    },
+    {
+        "restaurant_id": "R002",
+        "name": "Late night at Lakeside",
+        "operating_hours": {
+            "start_hour": 21,
+            "end_hour": 2
+        },
+        "hourly_order_rates": {
+            "21": 15.0,
+            "22": 20.0,
+            "23": 25.0,
+            "0": 22.0,
+            "1": 18.0
+        },
+        "location": {
+            "latitude": 37.4243,
+            "longitude": -122.1707
+        }
+    },
+    {
+        "restaurant_id": "R003",
+        "name": "Blend Eatery",
+        "operating_hours": {
+            "start_hour": 11,
+            "end_hour": 2
+        },
+        "hourly_order_rates": {
+            "17": 4.0,
+            "18": 8.0,
+            "19": 12.0,
+            "20": 10.0,
+            "21": 8.0,
+            "22": 5.0
+        },
+        "location": {
+            "latitude": 37.4325,
+            "longitude": -122.1718
+        }
+    },
+    {
+        "restaurant_id": "R004",
+        "name": "Starbucks",
+        "operating_hours": {
+            "start_hour": 5,
+            "end_hour": 19
+        },
+        "hourly_order_rates": {
+            "5": 8.0,
+            "6": 20.0,
+            "7": 28.0,
+            "8": 32.0,
+            "9": 25.0,
+            "10": 18.0,
+            "11": 22.0,
+            "12": 30.0,
+            "13": 28.0,
+            "14": 20.0,
+            "15": 15.0,
+            "16": 12.0,
+            "17": 10.0,
+            "18": 8.0
+        },
+        "location": {
+            "latitude": 37.4281,
+            "longitude": -122.1688
+        }
+    },
+    {
+        "restaurant_id": "R005",
+        "name": "Treehouse",
+        "operating_hours": {
+            "start_hour": 10,
+            "end_hour": 22
+        },
+        "hourly_order_rates": {
+            "10": 4.0,
+            "11": 8.0,
+            "12": 25.0,
+            "13": 28.0,
+            "14": 15.0,
+            "15": 8.0,
+            "16": 6.0,
+            "17": 10.0,
+            "18": 22.0,
+            "19": 26.0,
+            "20": 18.0,
+            "21": 10.0
+        },
+        "location": {
+            "latitude": 37.4281,
+            "longitude": -122.1688
+        }
+    },
+    {
+        "restaurant_id": "R006",
+        "name": "Olive",
+        "operating_hours": {
+            "start_hour": 7,
+            "end_hour": 14
+        },
+        "hourly_order_rates": {
+            "7": 3.0,
+            "8": 5.0,
+            "9": 8.0,
+            "10": 12.0,
+            "11": 20.0,
+            "12": 28.0,
+            "13": 25.0
+        },
+        "location": {
+            "latitude": 37.4281,
+            "longitude": -122.1688
+        }
+    },
+    {
+        "restaurant_id": "R007",
+        "name": "Coupa Cafe - Green Library",
+        "operating_hours": {
+            "start_hour": 7,
+            "end_hour": 19
+        },
+        "hourly_order_rates": {
+            "7": 4.0,
+            "8": 6.0,
+            "9": 8.0,
+            "10": 10.0,
+            "11": 12.0,
+            "12": 25.0,
+            "13": 28.0,
+            "14": 22.0,
+            "15": 18.0,
+            "16": 12.0,
+            "17": 8.0,
+            "18": 6.0
+        },
+        "location": {
+            "latitude": 37.4262,
+            "longitude": -122.1670
+        }
+    }
+]
+

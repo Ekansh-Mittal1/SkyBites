@@ -1,91 +1,100 @@
 [
     {
         "destination_id": "D001",
-        "name": "Stanford Main Campus",
+        "name": "Florence Moore",
         "location": {
-            "latitude": 37.4275,
-            "longitude": -122.1697
+            "latitude": 37.422479,
+            "longitude": -122.172014
         },
         "proportion": 0.15
     },
     {
         "destination_id": "D002",
-        "name": "Palo Alto Downtown",
+        "name": "Lagunita Court",
         "location": {
-            "latitude": 37.4419,
-            "longitude": -122.1430
+            "latitude": 37.425709,
+            "longitude": -122.176145
         },
         "proportion": 0.12
     },
     {
         "destination_id": "D003",
-        "name": "Menlo Park Residential",
+        "name": "Governors Corner",
         "location": {
-            "latitude": 37.4538,
-            "longitude": -122.1821
+            "latitude": 37.425313,
+            "longitude": -122.179981
         },
         "proportion": 0.10
     },
     {
         "destination_id": "D004",
-        "name": "Stanford Shopping Center",
+        "name": "Wilbur",
         "location": {
-            "latitude": 37.4444,
-            "longitude": -122.1611
+            "latitude": 37.424550,
+            "longitude": -122.163009
         },
         "proportion": 0.13
     },
     {
         "destination_id": "D005",
-        "name": "University Avenue",
+        "name": "Stern",
         "location": {
-            "latitude": 37.4427,
-            "longitude": -122.1436
+            "latitude": 37.425132,
+            "longitude": -122.165494
         },
         "proportion": 0.11
     },
     {
         "destination_id": "D006",
-        "name": "East Palo Alto",
+        "name": "Crothers",
         "location": {
-            "latitude": 37.4688,
-            "longitude": -122.1411
+            "latitude": 37.425894,
+            "longitude": -122.165230
         },
         "proportion": 0.08
     },
     {
         "destination_id": "D007",
-        "name": "Stanford Research Park",
+        "name": "Casper",
         "location": {
-            "latitude": 37.4150,
-            "longitude": -122.1494
+            "latitude": 37.425472,
+            "longitude": -122.161491
         },
         "proportion": 0.09
     },
     {
         "destination_id": "D008",
-        "name": "Palo Alto Hills",
+        "name": "Mirrielees",
         "location": {
-            "latitude": 37.4000,
-            "longitude": -122.1500
+            "latitude": 37.423783,
+            "longitude": -122.159752
         },
         "proportion": 0.07
     },
     {
         "destination_id": "D009",
-        "name": "California Avenue",
+        "name": "EVGR",
         "location": {
-            "latitude": 37.4292,
-            "longitude": -122.1381
+            "latitude": 37.425168,
+            "longitude": -122.157993
         },
         "proportion": 0.10
     },
     {
         "destination_id": "D010",
-        "name": "Stanford Medical Center",
+        "name": "CODA",
         "location": {
-            "latitude": 37.4331,
-            "longitude": -122.1744
+            "latitude": 37.430125,
+            "longitude": -122.171272
+        },
+        "proportion": 0.05
+    },
+    {
+        "destination_id": "D010",
+        "name": "The Row",
+        "location": {
+            "latitude": 37.421890,
+            "longitude": -122.168498
         },
         "proportion": 0.05
     }
