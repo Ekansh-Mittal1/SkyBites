@@ -1,5 +1,6 @@
 import gymnasium as gym
 from gymnasium import spaces
+from gymnasium import Wrapper
 import simpy
 import numpy as np
 import pandas as pd
@@ -14,6 +15,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from drone_physics import DronePhysicsModel
+from simulate_orders import generate_random_day
 
 # Constants
 SIM_STEP_SECONDS = 60  # Agent makes decisions every 1 minute
@@ -34,16 +36,39 @@ class SkyBitesEnv(gym.Env):
     """
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, orders_csv: str, restaurants_json: str, pads_json: str, base_json: str = "config/base.json", num_drones: int = 10):
+    def __init__(self, orders_csv: str = None, restaurants_json: str = None, pads_json: str = None, 
+                 base_json: str = "config/base.json", num_drones: int = 10, dynamic_generation: bool = False):
         super().__init__()
         
-        # 1. Load Configuration
-        self.restaurants = self._load_restaurants(restaurants_json)
-        self.pads = self._load_pads(pads_json)
+        # 1. Load Configuration ONCE to memory
+        self.restaurants = self._load_restaurants(restaurants_json) if restaurants_json else {}
+        self.pads = self._load_pads(pads_json) if pads_json else {}
         self.base = self._load_base(base_json)
-        self.orders_df = pd.read_csv(orders_csv)
-        # Strip whitespace from column names
-        self.orders_df.columns = self.orders_df.columns.str.strip()
+        
+        # Store configs as lists for the generator (needed for generate_random_day)
+        # Load the raw JSON lists
+        if restaurants_json:
+            with open(restaurants_json, 'r') as f:
+                self.restaurants_list = json.load(f)
+        else:
+            self.restaurants_list = []
+        
+        if pads_json:
+            with open(pads_json, 'r') as f:
+                self.pads_list = json.load(f)
+        else:
+            self.pads_list = []
+        
+        # Store dynamic generation flag
+        self.dynamic_generation = dynamic_generation
+        
+        # Load initial data
+        if not self.dynamic_generation and orders_csv:
+            self.orders_df = pd.read_csv(orders_csv)
+            # Strip whitespace from column names
+            self.orders_df.columns = self.orders_df.columns.str.strip()
+        else:
+            self.orders_df = None  # Will be generated on reset
         
         # Create node ID mapping: 0..N-1 = restaurants, N..M-1 = pads, M = base
         self.restaurant_ids = sorted(self.restaurants.keys())
@@ -55,8 +80,8 @@ class SkyBitesEnv(gym.Env):
         self.base_node_id = self.num_nodes - 1
         
         # 2. Initialize Physics
-        # Use aeryon-skyrangerR70: supports 2.0 kg payload, 35 min endurance
-        self.physics = DronePhysicsModel(drone_name="aeryon-skyrangerR70")
+        # Use SkyRanger R70: supports 2.0 kg payload, 35 min endurance
+        self.physics = DronePhysicsModel(drone_config="skyranger_r70")
         battery_specs = self.physics._get_battery_specs()
         # Calculate energy if not directly specified
         if battery_specs['energy_wh'] is None:
@@ -102,6 +127,34 @@ class SkyBitesEnv(gym.Env):
         self.completed_orders = 0
         self.failed_orders = 0  # Orders that couldn't be completed due to battery
         self.total_reward = 0.0
+    
+    def __getstate__(self):
+        """
+        Custom pickling to exclude SimPy generators which cannot be pickled.
+        Used for multiprocessing compatibility on Mac.
+        """
+        state = self.__dict__.copy()
+        # Remove SimPy environment and any generator references
+        state['simpy_env'] = None
+        # Clean drone states to remove any SimPy event references
+        if 'drones' in state and state['drones']:
+            cleaned_drones = []
+            for drone in state['drones']:
+                cleaned_drone = drone.copy()
+                # Remove SimPy event references (they're generators)
+                if 'action_event' in cleaned_drone:
+                    cleaned_drone['action_event'] = None
+                cleaned_drones.append(cleaned_drone)
+            state['drones'] = cleaned_drones
+        return state
+    
+    def __setstate__(self, state):
+        """
+        Custom unpickling. SimPy environment will be recreated in reset().
+        """
+        self.__dict__.update(state)
+        # Ensure simpy_env is None (will be created in reset)
+        self.simpy_env = None
 
     def _load_restaurants(self, path: str) -> Dict[str, Dict]:
         """Load restaurants from JSON and create lookup dict."""
@@ -191,10 +244,26 @@ class SkyBitesEnv(gym.Env):
         """Reset the environment to initial state."""
         super().reset(seed=seed)
         
-        # 1. Reset SimPy
+        # 1. Handle Random Seeding
+        # If dynamic, we rely on numpy's internal state or seed explicitly
+        if seed is not None:
+            np.random.seed(seed)
+        
+        # 2. Generate Orders (if dynamic generation is enabled)
+        if self.dynamic_generation:
+            # Generate a fresh day in-memory
+            # This makes every episode unique!
+            self.orders_df = generate_random_day(
+                self.restaurants_list, 
+                self.pads_list
+            )
+            # Strip whitespace from column names
+            self.orders_df.columns = self.orders_df.columns.str.strip()
+        
+        # 3. Reset SimPy
         self.simpy_env = simpy.Environment()
         
-        # 2. Reset Drones (all start at base)
+        # 4. Reset Drones (all start at base)
         self.drones = []
         base_loc = self._get_base_loc()
         for i in range(self.num_drones):
@@ -274,7 +343,7 @@ class SkyBitesEnv(gym.Env):
         
         # Calculate energy for each leg
         # Leg 1: Current -> Restaurant (no payload)
-        current_wind = 5.0  # Use average wind for estimation
+        current_wind = 0.0  # No wind
         try:
             energy_1, _ = self.physics.calculate_energy_cost(
                 distance_meters=dist_to_restaurant,
@@ -422,8 +491,7 @@ class SkyBitesEnv(gym.Env):
             dist_meters = geodesic(drone['loc'], target_loc).meters
             
             # 3. Use Physics Model
-            current_wind = np.random.normal(5.0, 2.0)  # Random wind ~5 m/s
-            current_wind = max(0.0, current_wind)  # No negative wind
+            current_wind = 0.0  # No wind
             
             try:
                 energy_req, flight_time = self.physics.calculate_energy_cost(
@@ -557,6 +625,10 @@ class SkyBitesEnv(gym.Env):
 
     def _order_spawner(self):
         """SimPy process that spawns orders based on CSV timestamps."""
+        # Safety check: ensure orders_df exists and is not empty
+        if self.orders_df is None or len(self.orders_df) == 0:
+            return
+        
         # Sort dataframe by time
         sorted_orders = self.orders_df.sort_values('timestamp_minutes')
         
@@ -869,3 +941,70 @@ class SkyBitesEnv(gym.Env):
         
         plt.tight_layout()
         return fig, ax
+
+
+class DroneActionMaskWrapper(Wrapper):
+    """
+    SB3-Contrib compatible wrapper.
+    Implements the required `action_masks()` method.
+    MOVED HERE FOR MULTIPROCESSING COMPATIBILITY ON MAC.
+    """
+    def __init__(self, env):
+        super().__init__(env)
+        self.env = env
+        
+    def action_masks(self):
+        """
+        Returns a LIST of boolean arrays (one for each drone).
+        Required signature for MaskablePPO with MultiDiscrete action spaces.
+        
+        The action space is MultiDiscrete([num_nodes] * num_drones), so each
+        drone has exactly num_nodes actions (0 to num_nodes-1). The base is at
+        index num_nodes-1, which serves as the "stay/charge" action.
+        """
+        num_drones = self.env.num_drones
+        num_nodes = self.env.num_nodes
+        # Base is at index num_nodes - 1, which can be used for "stay/charge"
+        base_action_index = num_nodes - 1
+        
+        masks = []
+        unwrapped = self.env.unwrapped
+        
+        # Safety check: if environment hasn't been reset yet, return all-true masks
+        if not hasattr(unwrapped, 'drones') or unwrapped.drones is None or len(unwrapped.drones) == 0:
+            # Environment not initialized yet - allow all actions
+            for _ in range(num_drones):
+                drone_mask = np.ones(num_nodes, dtype=bool)
+                masks.append(drone_mask)
+            return masks
+        
+        try:
+            for drone in unwrapped.drones:
+                status = drone.get('status', STATUS_IDLE)
+                
+                # Create a mask for this specific drone
+                # Size = num_nodes (matches the action space exactly)
+                drone_mask = np.zeros(num_nodes, dtype=bool)
+                
+                if status == STATUS_IDLE:
+                    # IDLE: Can go anywhere (including base for charging)
+                    drone_mask[:] = True
+                    
+                elif status == STATUS_CHARGING:
+                    # CHARGING: Can leave (go anywhere) OR continue charging at base
+                    drone_mask[:] = True
+                    
+                else:
+                    # MOVING / SERVICE / DEAD / UNKNOWN
+                    # MUST DO NOTHING - only allow staying at current location
+                    # Since we can't know the exact location, allow base (stay/charge)
+                    # In practice, the agent should learn not to change actions when moving
+                    drone_mask[base_action_index] = True
+                
+                masks.append(drone_mask)
+        except (AttributeError, KeyError, TypeError):
+            # Fallback if accessing drone state fails (e.g., during pickling)
+            # Return all-true masks to allow all actions
+            masks = [np.ones(num_nodes, dtype=bool) for _ in range(num_drones)]
+            
+        return masks

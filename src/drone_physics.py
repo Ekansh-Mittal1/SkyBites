@@ -1,334 +1,185 @@
-import drone_awe
 import numpy as np
+import json
+import os
 
 class DronePhysicsModel:
-    def __init__(self, drone_name="dji-Mavic2", cruise_altitude=100.0, climb_rate=3.0, descent_rate=2.0):
+    def __init__(self, drone_config="skyranger_r70"):
         """
-        Initialize the drone physics model.
+        Pure physics implementation using Momentum Theory & Aerodynamic Drag.
+        No external libraries required.
         
         Args:
-            drone_name: Valid drone name from drone-awe library.
-                       Options: '3DR-IRIS', '3DR-Solo', 'aeryon-skyrangerR70',
-                                'asctec-Falcon8', 'dji-Mavic2', 'dji-Phantom4RTK',
-                                'freefly-alta8', 'aerovironment-Puma3AE',
-                                'precisionhawk-FireFLY6Pro', 'senseFly-ebeeX',
-                                'yuneec-TyphoonHPlus'
-            cruise_altitude: Cruise altitude in meters (default: 100m)
-            climb_rate: Vertical climb speed in m/s (default: 3.0 m/s)
-            descent_rate: Vertical descent speed in m/s (default: 2.0 m/s, slower for safety)
+            drone_config: Name of the drone configuration file (without .json extension)
+                         Config files should be in the config/ directory
         """
-        self.drone_name = drone_name
-        self.cruise_altitude = cruise_altitude
-        self.climb_rate = climb_rate
-        self.descent_rate = descent_rate
-        # Default mission speed in m/s (can be overridden)
-        self.default_speed = 10.0  # m/s
-        # Load battery specs immediately before any models can corrupt the database
-        self._battery_specs = self._get_battery_specs_early()
+        # Load configuration from JSON file
+        config_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config",
+            f"{drone_config}.json"
+        )
+        
+        if not os.path.exists(config_path):
+            raise FileNotFoundError(
+                f"Drone configuration file not found: {config_path}\n"
+                f"Please ensure the config file exists in the config/ directory."
+            )
+        
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        # 1. PHYSICAL CONSTANTS
+        physical = config.get("physical_constants", {})
+        self.g = physical.get("gravity", 9.81)
+        self.rho = physical.get("air_density", 1.225)
+        self.eta = physical.get("propulsive_efficiency", 0.75)
+        
+        # 2. DRONE SPECIFICATIONS
+        # Weight
+        weight = config.get("weight", {})
+        self.mass_empty = weight.get("mass_empty_kg", 4.7)
+        self.mass_max = weight.get("mass_max_kg", 8.5)
+        
+        # Aerodynamics
+        aero = config.get("aerodynamics", {})
+        self.cd = aero.get("drag_coefficient", 0.6)
+        self.area_front = aero.get("frontal_area_m2", 0.15)
+        
+        # Rotors (Lift System)
+        rotors = config.get("rotors", {})
+        self.num_rotors = rotors.get("num_rotors", 4)
+        self.rotor_diameter = rotors.get("rotor_diameter_m", 0.55)
+        self.rotor_radius = self.rotor_diameter / 2
+        # Total Disk Area = N * pi * r^2
+        self.area_disk = self.num_rotors * np.pi * (self.rotor_radius ** 2)
+        
+        # Battery (Energy Source)
+        battery = config.get("battery", {})
+        self.battery_capacity_wh = battery.get("capacity_wh", 333.0)
+        self.charger_power_w = battery.get("charger_power_w", 200.0)
+        self.battery_voltage_v = battery.get("voltage_v", 22.2)
+        
+        # Flight Limits
+        limits = config.get("flight_limits", {})
+        self.speed_limit = limits.get("speed_limit_ms", 15.0)
+        self.climb_rate = limits.get("climb_rate_ms", 3.0)
+        self.descent_rate = limits.get("descent_rate_ms", 2.0)
+        self.default_speed = limits.get("default_speed_ms", 10.0)
+        
+        # Avionics
+        avionics = config.get("avionics", {})
+        self.p_avionics = avionics.get("base_power_w", 15.0)
 
-    def _get_battery_specs_early(self):
+    def _calculate_power(self, speed_ms, payload_kg, wind_speed_ms=0.0):
         """
-        Load battery specs early, before any models run (which can corrupt the database).
-        This is called in __init__ to capture the original values.
+        Calculates instantaneous power (Watts) required for steady flight.
+        Uses Momentum Theory for lift and Drag Equation for forward motion.
         """
-        # Import drones database directly
-        from drone_awe.drones import drones
-        import copy
+        # A. Total Mass & Thrust
+        total_mass = self.mass_empty + payload_kg
+        thrust_newtons = total_mass * self.g
         
-        # Find the drone in the database and make a deep copy
-        drone_data = None
-        for drone in drones:
-            if drone['id'] == self.drone_name:
-                drone_data = copy.deepcopy(drone)
-                break
+        # B. Effective Airspeed (Ground Speed + Wind Component)
+        # We assume headwind for worst-case energy estimation
+        airspeed = speed_ms + wind_speed_ms
         
-        if drone_data is None:
-            raise ValueError(f"Drone '{self.drone_name}' not found in database")
+        # C. Induced Power (Lift)
+        # P_induced = T^1.5 / sqrt(2 * rho * A)
+        # Note: Induced power actually drops slightly with forward speed, 
+        # but using the hover value is a safe, robust conservative estimate for RL.
+        p_induced_ideal = (thrust_newtons ** 1.5) / np.sqrt(2 * self.rho * self.area_disk)
         
-        # Extract battery specs
-        battery = drone_data.get('battery', {})
-        capacity_mah = battery.get('batterycapacity', None)
-        voltage_v = battery.get('batteryvoltage', None)
+        # D. Parasitic Power (Drag)
+        # P_drag = 0.5 * Cd * rho * A * v^3
+        p_parasitic = 0.5 * self.cd * self.rho * self.area_front * (airspeed ** 3)
         
-        # Always calculate energy from capacity and voltage
-        if capacity_mah is not None and voltage_v is not None:
-            energy_wh = (capacity_mah / 1000.0) * voltage_v
-        else:
-            energy_wh = battery.get('batteryenergy', None)
+        # E. Total Power (Watts)
+        # Scale by efficiency factor (eta)
+        p_total = (p_induced_ideal + p_parasitic) / self.eta
         
-        return {
-            'capacity_mah': capacity_mah,
-            'voltage_v': voltage_v,
-            'energy_wh': energy_wh,
-            'charger_power_w': drone_data.get('chargerpowerrating', None),
-            'recharge_time_min': drone_data.get('batteryrechargetime', None)
-        }
-    
-    def _get_battery_specs(self):
-        """
-        Helper method to get battery specifications.
-        Returns cached specs that were loaded in __init__ before any models could corrupt the database.
-        
-        Returns:
-            Dictionary with battery specs: capacity_mah, voltage_v, energy_wh, charger_power_w, recharge_time_min
-        """
-        return self._battery_specs
-
-    def _calculate_power(self, mission_speed, wind_speed, payload_mass, altitude=None):
-        """
-        Helper method to calculate power consumption for given flight conditions.
-        
-        Args:
-            mission_speed: Horizontal speed in m/s (0 for hover)
-            wind_speed: Wind speed in m/s
-            payload_mass: Payload mass in kg
-            altitude: Flight altitude in meters (uses cruise_altitude if None)
-            
-        Returns:
-            Power consumption in Watts
-        """
-        if altitude is None:
-            altitude = self.cruise_altitude
-        
-        model_input = {
-            "dronename": self.drone_name,
-            "windspeed": wind_speed,
-            "wind": True if wind_speed > 0 else False,
-            "winddirection": 0.0,  # Headwind (0 = headwind, 180 = tailwind)
-            "mission": {
-                "missionspeed": mission_speed,  # m/s
-                "altitude": altitude,  # meters
-                "heading": 0.0,
-                "payload": payload_mass  # kg
-            },
-            "altitude": altitude,  # meters
-            "temperature": 15.0,  # Celsius
-            "xlabel": "missionspeed",  # Independent variable
-            "ylabel": "power",  # Dependent variable (power consumption)
-            "xvals": [mission_speed],  # Single value for this mission speed
-            "zvals": [0.0],  # No z-variable iteration
-            "simulationtype": "simple",
-            "timestep": 1,
-            "title": "Power Calculation"
-        }
-        
-        # Create and run the model
-        m = drone_awe.model(model_input, verbose=False)
-        m.simulate()
-        
-        # Extract power consumption (in Watts)
-        return m.classes['power'].params['power']
+        # F. Avionics Base Load (Computers, Sensors, Comms)
+        return p_total + self.p_avionics
 
     def calculate_energy_cost(self, distance_meters, wind_speed, payload_mass, mission_speed=None, return_breakdown=False):
         """
-        Uses drone-awe to estimate energy consumption for a complete flight leg,
-        including takeoff/climb, cruise, and landing/descent phases.
-        
-        Args:
-            distance_meters: Distance to travel in meters
-            wind_speed: Wind speed in m/s
-            payload_mass: Payload mass in kg
-            mission_speed: Mission speed in m/s (optional, uses default if not provided)
-            return_breakdown: If True, returns detailed breakdown of energy by phase
-            
-        Returns:
-            If return_breakdown=False: Tuple of (total_energy_wh, total_flight_time_seconds)
-            If return_breakdown=True: Tuple of (total_energy_wh, total_flight_time_seconds, breakdown_dict)
+        Integrates power over time to find total energy cost (Wh) for a flight leg.
         """
-        if mission_speed is None:
-            mission_speed = self.default_speed
+        if mission_speed is None: mission_speed = self.default_speed
         
-        # 1. Calculate hover power (for takeoff and landing)
-        # Use a very small speed to approximate hover (0 m/s may cause issues in the model)
-        hover_speed = 0.5  # m/s (near hover, avoids edge case at 0 m/s)
-        hover_power = self._calculate_power(hover_speed, wind_speed, payload_mass, altitude=self.cruise_altitude)
+        # 1. PHASE: CLIMB (Takeoff to Cruise Altitude)
+        # Assume 100m cruise altitude
+        cruise_altitude = 100.0
+        climb_time = cruise_altitude / self.climb_rate
+        # Climb requires extra power (lifting work). Approx 1.3x hover power.
+        p_hover = self._calculate_power(0.0, payload_mass, wind_speed)
+        p_climb = p_hover * 1.2
+        e_climb_wh = (p_climb * climb_time) / 3600.0
         
-        # 2. Calculate cruise power (forward flight at mission speed)
-        cruise_power = self._calculate_power(mission_speed, wind_speed, payload_mass, altitude=self.cruise_altitude)
+        # 2. PHASE: CRUISE (Travel)
+        cruise_time = distance_meters / mission_speed
+        p_cruise = self._calculate_power(mission_speed, payload_mass, wind_speed)
+        e_cruise_wh = (p_cruise * cruise_time) / 3600.0
         
-        # 3. Calculate climb time and energy
-        climb_time = self.cruise_altitude / self.climb_rate  # seconds
-        # Climb power is typically higher than hover due to additional work against gravity
-        # Use a multiplier to account for climb power (typically 1.2-1.5x hover power)
-        climb_power_multiplier = 1.3  # 30% more power during climb
-        climb_power = hover_power * climb_power_multiplier
-        climb_energy = (climb_power * climb_time) / 3600.0  # Wh
+        # 3. PHASE: DESCENT (Landing)
+        descent_time = cruise_altitude / self.descent_rate
+        # Descent uses less power. Approx 0.8x hover power.
+        p_descent = p_hover * 0.8
+        e_descent_wh = (p_descent * descent_time) / 3600.0
         
-        # 4. Calculate cruise time and energy
-        cruise_time = distance_meters / mission_speed  # seconds
-        cruise_energy = (cruise_power * cruise_time) / 3600.0  # Wh
-        
-        # 5. Calculate descent time and energy
-        descent_time = self.cruise_altitude / self.descent_rate  # seconds
-        # Descent power is typically lower than hover (gravity assists)
-        # Use a multiplier to account for descent power (typically 0.7-0.9x hover power)
-        descent_power_multiplier = 0.8  # 20% less power during descent
-        descent_power = hover_power * descent_power_multiplier
-        descent_energy = (descent_power * descent_time) / 3600.0  # Wh
-        
-        # 6. Total energy and time
-        total_energy_wh = climb_energy + cruise_energy + descent_energy
-        total_flight_time = climb_time + cruise_time + descent_time
+        # 4. TOTALS
+        total_energy_wh = e_climb_wh + e_cruise_wh + e_descent_wh
+        total_time_s = climb_time + cruise_time + descent_time
         
         if return_breakdown:
-            breakdown = {
-                'climb': {
-                    'time': climb_time,
-                    'power': climb_power,
-                    'energy': climb_energy
-                },
-                'cruise': {
-                    'time': cruise_time,
-                    'power': cruise_power,
-                    'energy': cruise_energy
-                },
-                'descent': {
-                    'time': descent_time,
-                    'power': descent_power,
-                    'energy': descent_energy
-                },
-                'hover_power': hover_power
+            return total_energy_wh, total_time_s, {
+                "hover_power": p_hover,
+                "cruise_power": p_cruise,
+                "climb_energy": e_climb_wh,
+                "cruise_energy": e_cruise_wh
             }
-            return total_energy_wh, total_flight_time, breakdown
-        else:
-            return total_energy_wh, total_flight_time
+        
+        return total_energy_wh, total_time_s
 
-    def calculate_recharge_time(self, current_charge_percent=None, current_charge_wh=None, 
-                               target_charge_percent=100.0, charging_efficiency=0.85):
+    def calculate_recharge_time(self, current_charge_wh, target_charge_percent=100.0, charging_efficiency=0.9):
         """
-        Calculate the time required to recharge a drone battery.
-        
-        Args:
-            current_charge_percent: Current battery charge as percentage (0-100)
-            current_charge_wh: Current battery charge in Watt-hours (alternative to percent)
-            target_charge_percent: Target charge level as percentage (default: 100%)
-            charging_efficiency: Charging efficiency factor (default: 0.85, i.e., 85% efficient)
-                                Accounts for energy loss during charging (heat, etc.)
-            
-        Returns:
-            Tuple of (recharge_time_seconds, recharge_time_minutes, energy_to_charge_wh)
-            
-        Raises:
-            ValueError: If battery specs are not available or charge values are invalid
+        Calculates time to charge battery.
         """
-        # Get battery specifications
-        specs = self._get_battery_specs()
+        target_wh = self.battery_capacity_wh * (target_charge_percent / 100.0)
+        needed_wh = max(0.0, target_wh - current_charge_wh)
         
-        if specs['energy_wh'] is None:
-            raise ValueError(f"Battery energy capacity not available for drone '{self.drone_name}'")
+        # Time = Energy / (Power * Efficiency)
+        hours = needed_wh / (self.charger_power_w * charging_efficiency)
         
-        total_energy_wh = specs['energy_wh']
-        
-        # Determine current charge in Wh
-        if current_charge_wh is not None:
-            current_wh = current_charge_wh
-            current_percent = (current_wh / total_energy_wh) * 100.0
-        elif current_charge_percent is not None:
-            current_percent = current_charge_percent
-            current_wh = (current_percent / 100.0) * total_energy_wh
-        else:
-            raise ValueError("Must provide either current_charge_percent or current_charge_wh")
-        
-        # Validate charge values
-        if current_percent < 0 or current_percent > 100:
-            raise ValueError(f"Current charge percentage must be between 0 and 100, got {current_percent}")
-        if target_charge_percent < 0 or target_charge_percent > 100:
-            raise ValueError(f"Target charge percentage must be between 0 and 100, got {target_charge_percent}")
-        if current_percent >= target_charge_percent:
-            return 0.0, 0.0, 0.0  # Already at or above target charge
-        
-        # Calculate energy needed to charge
-        target_wh = (target_charge_percent / 100.0) * total_energy_wh
-        energy_to_charge_wh = target_wh - current_wh
-        
-        # Get charger power rating
-        charger_power_w = specs['charger_power_w']
-        
-        if charger_power_w is None:
-            # Fallback: estimate from recharge time if available
-            if specs['recharge_time_min'] is not None:
-                # Estimate charger power from full recharge time
-                # Assuming charging from 0% to 100% takes recharge_time_min
-                # Energy needed = total_energy_wh / charging_efficiency
-                estimated_charger_power_w = (total_energy_wh / charging_efficiency) / (specs['recharge_time_min'] / 60.0)
-                charger_power_w = estimated_charger_power_w
-            else:
-                # Default fallback: use a reasonable default (e.g., 60W for typical drone charger)
-                charger_power_w = 60.0
-                import warnings
-                warnings.warn(f"Charger power rating not available for '{self.drone_name}', using default {charger_power_w}W")
-        
-        # Calculate recharge time
-        # Account for charging efficiency (not all input power goes to battery)
-        # Time = Energy / (Charger Power * Efficiency)
-        recharge_time_hours = energy_to_charge_wh / (charger_power_w * charging_efficiency)
-        recharge_time_seconds = recharge_time_hours * 3600.0
-        recharge_time_minutes = recharge_time_hours * 60.0
-        
-        return recharge_time_seconds, recharge_time_minutes, energy_to_charge_wh
+        return hours * 3600, hours * 60, needed_wh
+    
+    def _get_battery_specs(self):
+        """Helper for environment compatibility"""
+        return {
+            'energy_wh': self.battery_capacity_wh,
+            'capacity_mah': (self.battery_capacity_wh / self.battery_voltage_v) * 1000,
+            'voltage_v': self.battery_voltage_v
+        }
 
 if __name__ == "__main__":
-    test_model = DronePhysicsModel()
+    # VALIDATION
+    model = DronePhysicsModel()
+    print(f"--- Physics Model Validation (SkyRanger R70 Config) ---")
+    print(f"Empty Mass: {model.mass_empty} kg")
+    print(f"Max Mass:   {model.mass_max} kg")
+    print(f"Battery:    {model.battery_capacity_wh} Wh")
     
-    # Test energy cost calculation
-    energy_used, flight_time_seconds, breakdown = test_model.calculate_energy_cost(1000, 5, 1, return_breakdown=True)
-    print(f"Total energy used: {energy_used:.2f} Wh")
-    print(f"Total flight time: {flight_time_seconds:.2f} seconds ({flight_time_seconds/60:.2f} minutes)")
+    # Test 1: Hover (0 m/s) with 1kg Payload
+    p_hover = model._calculate_power(0, 1.0)
+    print(f"\nHover Power (1kg payload): {p_hover:.1f} Watts")
+    # Expected: ~800-1000W for a 5.7kg drone
     
-    # Show breakdown
-    print("\nEnergy breakdown:")
-    print(f"  Climb ({breakdown['climb']['time']:.1f}s): {breakdown['climb']['energy']:.3f} Wh (power: {breakdown['climb']['power']:.1f} W)")
-    print(f"  Cruise ({breakdown['cruise']['time']:.1f}s): {breakdown['cruise']['energy']:.3f} Wh (power: {breakdown['cruise']['power']:.1f} W)")
-    print(f"  Descent ({breakdown['descent']['time']:.1f}s): {breakdown['descent']['energy']:.3f} Wh (power: {breakdown['descent']['power']:.1f} W)")
-    print(f"\nHover power reference: {breakdown['hover_power']:.1f} W")
+    # Test 2: Cruise (15 m/s) with 1kg Payload
+    p_cruise = model._calculate_power(15.0, 1.0)
+    print(f"Cruise Power (15 m/s):     {p_cruise:.1f} Watts")
     
-    # Test recharge time calculation
-    print("\n" + "="*50)
-    print("Recharge Time Calculation")
-    print("="*50)
-    
-    # Get battery specs (already loaded in __init__)
-    specs = test_model._get_battery_specs()
-    print(f"\nBattery specifications for {test_model.drone_name}:")
-    print(f"  Total capacity: {specs['energy_wh']:.2f} Wh")
-    print(f"  Charger power: {specs['charger_power_w']:.1f} W" if specs['charger_power_w'] else "  Charger power: Not specified")
-    
-    # Test various charge levels
-    test_cases = [
-        (20.0, "20% charge"),
-        (50.0, "50% charge"),
-        (75.0, "75% charge"),
-    ]
-    
-    for charge_percent, description in test_cases:
-        recharge_sec, recharge_min, energy_needed = test_model.calculate_recharge_time(
-            current_charge_percent=charge_percent,
-            target_charge_percent=100.0
-        )
-        print(f"\nRecharging from {description} to 100%:")
-        print(f"  Energy needed: {energy_needed:.2f} Wh")
-        print(f"  Recharge time: {recharge_min:.1f} minutes ({recharge_sec:.0f} seconds)")
-    
-    # Test with energy in Wh
-    print(f"\nRecharging after using {energy_used:.2f} Wh:")
-    remaining_wh = max(0.0, specs['energy_wh'] - energy_used)  # Don't allow negative
-    remaining_percent = (remaining_wh / specs['energy_wh']) * 100.0
-    
-    if remaining_wh > 0:
-        recharge_sec, recharge_min, energy_needed = test_model.calculate_recharge_time(
-            current_charge_wh=remaining_wh,
-            target_charge_percent=100.0
-        )
-        print(f"  Remaining charge: {remaining_percent:.1f}% ({remaining_wh:.2f} Wh)")
-        print(f"  Energy needed: {energy_needed:.2f} Wh")
-        print(f"  Recharge time: {recharge_min:.1f} minutes ({recharge_sec:.0f} seconds)")
-    else:
-        # Battery would be completely drained (or over-discharged)
-        print(f"  Warning: Flight used {energy_used:.2f} Wh, which exceeds battery capacity ({specs['energy_wh']:.2f} Wh)")
-        print(f"  Battery would be completely drained. Full recharge needed:")
-        recharge_sec, recharge_min, energy_needed = test_model.calculate_recharge_time(
-            current_charge_percent=0.0,
-            target_charge_percent=100.0
-        )
-        print(f"  Energy needed: {energy_needed:.2f} Wh")
-        print(f"  Recharge time: {recharge_min:.1f} minutes ({recharge_sec:.0f} seconds)")
+    # Test 3: Full Mission (1km trip)
+    e, t, b = model.calculate_energy_cost(1000, 5.0, 1.0, return_breakdown=True)
+    print(f"\n1km Mission Cost (1kg payload, 5m/s wind):")
+    print(f"  Time:   {t:.1f} seconds")
+    print(f"  Energy: {e:.2f} Wh")
+    print(f"  % Batt: {(e / model.battery_capacity_wh)*100:.1f}%")
