@@ -1,0 +1,44 @@
+{
+  "drone_id": "skyranger_r70",
+  "name": "Aeryon SkyRanger R70",
+  "description": "Pure physics implementation using Momentum Theory & Aerodynamic Drag",
+  
+  "physical_constants": {
+    "gravity": 9.81,
+    "air_density": 1.225,
+    "propulsive_efficiency": 0.75
+  },
+  
+  "weight": {
+    "mass_empty_kg": 4.7,
+    "mass_max_kg": 8.5
+  },
+  
+  "aerodynamics": {
+    "drag_coefficient": 0.6,
+    "frontal_area_m2": 0.15
+  },
+  
+  "rotors": {
+    "num_rotors": 4,
+    "rotor_diameter_m": 0.55
+  },
+  
+  "battery": {
+    "capacity_wh": 333.0,
+    "voltage_v": 22.2,
+    "charger_power_w": 200.0
+  },
+  
+  "flight_limits": {
+    "speed_limit_ms": 15.0,
+    "climb_rate_ms": 3.0,
+    "descent_rate_ms": 2.0,
+    "default_speed_ms": 10.0
+  },
+  
+  "avionics": {
+    "base_power_w": 15.0
+  }
+}
+
