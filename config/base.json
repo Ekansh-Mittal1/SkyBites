@@ -1,0 +1,10 @@
+{
+    "base_id": "BASE_001",
+    "name": "Drone Base Station",
+    "location": {
+        "latitude": 37.422407,
+        "longitude": -122.176274
+    },
+    "description": "Main charging and maintenance base for the drone fleet"
+}
+

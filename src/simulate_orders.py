@@ -65,20 +65,26 @@ def load_delivery_destinations(config_path: str) -> List[Dict[str, Any]]:
                 "latitude": float,
                 "longitude": float
             },
-            "proportion": float  # percentage of total orders (should sum to 1.0)
+            "proportion": float  # relative weight (will be normalized to sum to 1.0)
         },
         ...
     ]
+    
+    Proportions are automatically normalized so they sum to 1.0.
     """
     with open(config_path, 'r') as f:
         destinations = json.load(f)
     
-    # Validate proportions sum to 1.0 (with tolerance for floating point)
+    # Normalize proportions so they sum to 1.0
     total_proportion = sum(d['proportion'] for d in destinations)
-    if abs(total_proportion - 1.0) > 0.01:
-        raise ValueError(
-            f"Delivery destination proportions must sum to 1.0, got {total_proportion}"
-        )
+    if total_proportion > 0:
+        for destination in destinations:
+            destination['proportion'] = destination['proportion'] / total_proportion
+    else:
+        # If all proportions are 0, set equal weights
+        equal_weight = 1.0 / len(destinations) if destinations else 1.0
+        for destination in destinations:
+            destination['proportion'] = equal_weight
     
     return destinations
 

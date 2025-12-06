@@ -1,2 +1,7 @@
-numpy>=1.21.0
+gymnasium==1.2.2
+simpy==4.1.1
+drone-awe==1.0.1
+pandas==2.3.3
+numpy==2.3.5
+geopy==2.4.1
 
