@@ -7,6 +7,7 @@ import json
 from geopy.distance import geodesic
 from typing import List, Dict, Tuple, Optional
 import matplotlib.pyplot as plt
+import contextily as ctx
 
 # Import physics model
 import sys
@@ -54,9 +55,19 @@ class SkyBitesEnv(gym.Env):
         self.base_node_id = self.num_nodes - 1
         
         # 2. Initialize Physics
-        self.physics = DronePhysicsModel(drone_name="dji-Mavic2")
+        # Use aeryon-skyrangerR70: supports 2.0 kg payload, 35 min endurance
+        self.physics = DronePhysicsModel(drone_name="aeryon-skyrangerR70")
         battery_specs = self.physics._get_battery_specs()
-        self.battery_capacity_wh = battery_specs['energy_wh']
+        # Calculate energy if not directly specified
+        if battery_specs['energy_wh'] is None:
+            # Calculate from capacity (mAh) and voltage (V)
+            if battery_specs['capacity_mah'] and battery_specs['voltage_v']:
+                self.battery_capacity_wh = (battery_specs['capacity_mah'] / 1000.0) * battery_specs['voltage_v']
+            else:
+                # Fallback to a reasonable default
+                self.battery_capacity_wh = 200.0  # Wh
+        else:
+            self.battery_capacity_wh = float(battery_specs['energy_wh'])
         
         # 3. Fleet Configuration
         self.num_drones = num_drones
@@ -69,10 +80,11 @@ class SkyBitesEnv(gym.Env):
         # 5. Define Observation Space
         # Fleet: [Lat, Lon, Battery_Wh, Status_Enum, Payload_kg] for each drone
         # Orders: [Order_Age_Min, Pickup_Loc_ID, Dropoff_Loc_ID] for up to MAX_ORDERS_IN_OBS orders
+        battery_max = float(self.battery_capacity_wh)
         self.observation_space = spaces.Dict({
             "fleet": spaces.Box(
-                low=np.array([[-90, -180, 0, STATUS_DEAD, 0]] * self.num_drones),
-                high=np.array([[90, 180, self.battery_capacity_wh, STATUS_CHARGING, 5.0]] * self.num_drones),
+                low=np.array([[-90.0, -180.0, 0.0, float(STATUS_DEAD), 0.0]] * self.num_drones, dtype=np.float32),
+                high=np.array([[90.0, 180.0, battery_max, float(STATUS_CHARGING), 5.0]] * self.num_drones, dtype=np.float32),
                 dtype=np.float32
             ),
             "orders": spaces.Box(
@@ -88,6 +100,7 @@ class SkyBitesEnv(gym.Env):
         self.drones = []
         self.active_orders = []
         self.completed_orders = 0
+        self.failed_orders = 0  # Orders that couldn't be completed due to battery
         self.total_reward = 0.0
 
     def _load_restaurants(self, path: str) -> Dict[str, Dict]:
@@ -208,7 +221,11 @@ class SkyBitesEnv(gym.Env):
         # 3. Reset Orders
         self.active_orders = []  # Orders currently spawned but not picked up
         self.completed_orders = 0
+        self.failed_orders = 0
         self.total_reward = 0.0
+        self._last_completed_count = 0  # Track for incremental reward
+        self._last_failed_count = 0  # Track for incremental reward
+        self._step_failed_orders = 0  # Track failures in current step
         
         # Start the order spawner process
         self.simpy_env.process(self._order_spawner())
@@ -217,6 +234,80 @@ class SkyBitesEnv(gym.Env):
         self.simpy_env.run(until=0.001)
         
         return self._get_obs(), {}
+
+    def _can_complete_order(self, drone: Dict, restaurant_node_id: int, order: Dict) -> Tuple[bool, float]:
+        """
+        Check if a drone has enough battery to complete an order.
+        Calculates energy needed for: current location -> restaurant -> dropoff -> base
+        
+        Args:
+            drone: Drone state dictionary
+            restaurant_node_id: Node ID of the restaurant
+            order: Order dictionary with delivery location info
+        
+        Returns:
+            Tuple of (can_complete: bool, total_energy_needed: float)
+        """
+        # Get restaurant location
+        restaurant_loc = self._get_loc_from_id(restaurant_node_id)
+        if restaurant_loc is None:
+            return False, float('inf')
+        
+        # Get delivery location
+        delivery_id = order.get('delivery_location_id', '')
+        delivery_node_id = self._get_node_id_from_pad_id(delivery_id)
+        if delivery_node_id is None:
+            return False, float('inf')
+        
+        delivery_loc = self._get_loc_from_id(delivery_node_id)
+        if delivery_loc is None:
+            return False, float('inf')
+        
+        # Get base location
+        base_loc = (self.base['lat'], self.base['lon'])
+        
+        # Calculate distances
+        current_loc = drone['loc']
+        dist_to_restaurant = geodesic(current_loc, restaurant_loc).meters
+        dist_restaurant_to_delivery = geodesic(restaurant_loc, delivery_loc).meters
+        dist_delivery_to_base = geodesic(delivery_loc, base_loc).meters
+        
+        # Calculate energy for each leg
+        # Leg 1: Current -> Restaurant (no payload)
+        current_wind = 5.0  # Use average wind for estimation
+        try:
+            energy_1, _ = self.physics.calculate_energy_cost(
+                distance_meters=dist_to_restaurant,
+                wind_speed=current_wind,
+                payload_mass=drone['payload']  # Current payload
+            )
+        except:
+            energy_1 = dist_to_restaurant * 0.01  # Fallback
+        
+        # Leg 2: Restaurant -> Delivery (with 1 kg payload)
+        try:
+            energy_2, _ = self.physics.calculate_energy_cost(
+                distance_meters=dist_restaurant_to_delivery,
+                wind_speed=current_wind,
+                payload_mass=1.0  # Order payload
+            )
+        except:
+            energy_2 = dist_restaurant_to_delivery * 0.01  # Fallback
+        
+        # Leg 3: Delivery -> Base (no payload after dropoff)
+        try:
+            energy_3, _ = self.physics.calculate_energy_cost(
+                distance_meters=dist_delivery_to_base,
+                wind_speed=current_wind,
+                payload_mass=0.0  # No payload after delivery
+            )
+        except:
+            energy_3 = dist_delivery_to_base * 0.01  # Fallback
+        
+        total_energy = energy_1 + energy_2 + energy_3
+        can_complete = drone['battery'] >= total_energy
+        
+        return can_complete, total_energy
 
     def step(self, actions):
         """
@@ -228,12 +319,39 @@ class SkyBitesEnv(gym.Env):
         Returns:
             obs, reward, terminated, truncated, info
         """
-        # --- Phase 1: Assign Tasks ---
+        # --- Phase 1: Assign Tasks with Safety Checks ---
         for drone_idx, target_node_id in enumerate(actions):
             drone = self.drones[drone_idx]
             
-            # Only allow reassignment if drone is IDLE
-            if drone['status'] == STATUS_IDLE and drone['action_event'] is not None:
+            # Only allow reassignment if drone is IDLE or CHARGING (can interrupt charging)
+            if drone['status'] in [STATUS_IDLE, STATUS_CHARGING] and drone['action_event'] is not None:
+                # Safety check: If target is a restaurant, verify the drone can complete the order
+                target_node_type = self._get_node_type_from_id(target_node_id)
+                
+                if target_node_type == 'restaurant':
+                    # Check if there's an order at this restaurant
+                    order = self._find_order_at_restaurant(target_node_id, check_assigned=False)
+                    if order is not None:
+                        # Check if drone can complete the full mission
+                        can_complete, total_energy = self._can_complete_order(
+                            drone, target_node_id, order
+                        )
+                        
+                        if not can_complete:
+                            # Drone cannot complete this order - mark as failed
+                            # Check if order is still active and not already failed
+                            order_still_active = any(
+                                o.get('restaurant_id') == order.get('restaurant_id') and 
+                                o.get('timestamp_minutes') == order.get('timestamp_minutes')
+                                for o in self.active_orders
+                            )
+                            if order_still_active and not order.get('failed', False):
+                                order['failed'] = True
+                                self.failed_orders += 1
+                                self._step_failed_orders += 1  # Track for this step's reward
+                            # Don't assign this task - drone stays idle
+                            continue
+                
                 # Wake up the drone process with new target
                 if not drone['action_event'].triggered:
                     drone['action_event'].succeed(value=target_node_id)
@@ -278,16 +396,22 @@ class SkyBitesEnv(gym.Env):
                 drone['status'] = STATUS_CHARGING
                 # Charge for the step duration
                 yield self.simpy_env.timeout(SIM_STEP_SECONDS)
-                # Use physics model to calculate recharge
+                # Use physics model to calculate recharge (with fallback)
                 remaining_wh = self.battery_capacity_wh - drone['battery']
                 if remaining_wh > 0:
-                    recharge_sec, recharge_min, _ = self.physics.calculate_recharge_time(
-                        current_charge_wh=drone['battery'],
-                        target_charge_percent=100.0
-                    )
-                    # Charge proportionally for the step duration
-                    charge_rate_wh_per_sec = remaining_wh / recharge_sec if recharge_sec > 0 else 0
-                    charge_amount = min(remaining_wh, charge_rate_wh_per_sec * SIM_STEP_SECONDS)
+                    try:
+                        recharge_sec, recharge_min, _ = self.physics.calculate_recharge_time(
+                            current_charge_wh=drone['battery'],
+                            target_charge_percent=100.0
+                        )
+                        # Charge proportionally for the step duration
+                        charge_rate_wh_per_sec = remaining_wh / recharge_sec if recharge_sec > 0 else 0
+                        charge_amount = min(remaining_wh, charge_rate_wh_per_sec * SIM_STEP_SECONDS)
+                    except (ValueError, Exception):
+                        # Fallback: use default 60W charger if recharge calculation fails
+                        charge_rate_wh_per_sec = 60.0 / 3600.0  # 60W = 60 Wh/s = 0.0167 Wh/s
+                        charge_amount = charge_rate_wh_per_sec * SIM_STEP_SECONDS
+                    
                     drone['battery'] = min(
                         self.battery_capacity_wh,
                         drone['battery'] + charge_amount
@@ -408,19 +532,26 @@ class SkyBitesEnv(gym.Env):
                 return 'pad'
         return None
 
-    def _find_order_at_restaurant(self, restaurant_node_id: int) -> Optional[Dict]:
-        """Find an active order waiting at a specific restaurant."""
+    def _find_order_at_restaurant(self, restaurant_node_id: int, check_assigned: bool = True) -> Optional[Dict]:
+        """
+        Find an active order waiting at a specific restaurant.
+        
+        Args:
+            restaurant_node_id: Node ID of the restaurant
+            check_assigned: If True, only return unassigned orders. If False, return any order.
+        """
         if restaurant_node_id >= self.num_restaurants:
             return None
         
         restaurant_id = self.restaurant_ids[restaurant_node_id]
         
-        # Find first order at this restaurant that hasn't been assigned
+        # Find first order at this restaurant
         for order in self.active_orders:
             if order.get('restaurant_id') == restaurant_id:
                 # Check if order is already assigned to a drone
-                if not order.get('assigned', False):
-                    order['assigned'] = True
+                if not check_assigned or not order.get('assigned', False):
+                    if check_assigned:
+                        order['assigned'] = True
                     return order
         return None
 
@@ -518,14 +649,19 @@ class SkyBitesEnv(gym.Env):
     def _calculate_reward(self) -> float:
         """
         Calculate reward for the current step.
-        +10 for each completed delivery
+        +10 for each completed delivery (incremental)
         -1 for each minute an order is late (age > 30 minutes)
         -100 for each crashed drone
+        -5 for each failed order (drone couldn't complete due to insufficient battery, incremental)
         """
         reward = 0.0
         
-        # Reward for completed orders (handled in _drone_process, but we track here)
-        # Note: completed_orders is incremented in _drone_process
+        # Reward for completed orders (incremental - only count new completions)
+        new_completions = self.completed_orders - self._last_completed_count
+        reward += new_completions * 10.0
+        
+        # Penalty for failed orders (use step counter for immediate reward)
+        reward -= self._step_failed_orders * 5.0
         
         # Penalty for old orders
         current_time_min = self.simpy_env.now / 60.0
@@ -554,7 +690,7 @@ class SkyBitesEnv(gym.Env):
 
     def visualize(self, figsize=(12, 10), show_labels=True, show_drone_paths=False):
         """
-        Visualize the environment showing restaurants, pads, base, and drones.
+        Visualize the environment showing restaurants, pads, base, and drones with map background.
         
         Args:
             figsize: Figure size tuple (width, height)
@@ -696,7 +832,7 @@ class SkyBitesEnv(gym.Env):
         else:
             ax.set_title('Drone Delivery Environment', fontsize=14, fontweight='bold')
         
-        # Set equal aspect ratio and add padding
+        # Set axis limits with padding
         lat_range = max(all_lats) - min(all_lats)
         lon_range = max(all_lons) - min(all_lons)
         padding = max(lat_range, lon_range) * 0.1
@@ -705,8 +841,28 @@ class SkyBitesEnv(gym.Env):
         ax.set_ylim(min(all_lats) - padding, max(all_lats) + padding)
         ax.set_aspect('equal', adjustable='box')
         
-        # Add grid
-        ax.grid(True, alpha=0.3, linestyle='--')
+        # Add basemap using contextily
+        # Contextily requires Web Mercator (EPSG:3857) coordinates
+        # We'll convert the axis limits and add the basemap
+        try:
+            # Get current axis limits in lat/lon
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+            
+            # Convert to Web Mercator for contextily
+            # Contextily expects EPSG:3857 (Web Mercator)
+            # We'll use contextily's built-in conversion
+            ctx.add_basemap(
+                ax,
+                crs='EPSG:4326',  # WGS84 (lat/lon)
+                source=ctx.providers.OpenStreetMap.Mapnik,
+                attribution_size=8
+            )
+        except Exception as e:
+            # Fallback if contextily fails (e.g., no internet)
+            print(f"Warning: Could not load basemap: {e}")
+            print("Falling back to grid visualization")
+            ax.grid(True, alpha=0.3, linestyle='--')
         
         # Add legend
         ax.legend(loc='upper right', fontsize=10, framealpha=0.9)

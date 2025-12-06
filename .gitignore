@@ -45,3 +45,4 @@ htmlcov/
 !example_*.csv
 test_*.csv
 
+*.png
