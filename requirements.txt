@@ -1,8 +1,16 @@
-gymnasium==1.2.2
+gymnasium>=0.28.1,<0.30
 simpy==4.1.1
 drone-awe==1.0.1
 pandas==2.3.3
-numpy==2.3.5
+numpy>=2.0.0
 geopy==2.4.1
 contextily==1.7.0
+stable-baselines3==2.3.0
+sb3-contrib==2.3.0
+tensorboard>=2.20.0
+tqdm==4.67.1
+rich==14.2.0
+matplotlib>=3.7.0
+imageio>=2.31.0
+imageio-ffmpeg>=0.4.9
 

@@ -37,8 +37,17 @@ class SkyBitesEnv(gym.Env):
     metadata = {"render_modes": ["human"]}
 
     def __init__(self, orders_csv: str = None, restaurants_json: str = None, pads_json: str = None, 
-                 base_json: str = "config/base.json", num_drones: int = 10, dynamic_generation: bool = False):
+                 base_json: str = "config/base.json", num_drones: int = 10, dynamic_generation: bool = False,
+                 auto_chain_orders: bool = False, order_scale_factor: int = 1):
         super().__init__()
+        
+        # Validate order_scale_factor
+        if order_scale_factor < 1:
+            raise ValueError("order_scale_factor must be >= 1")
+        
+        # Store new parameters
+        self.auto_chain_orders = auto_chain_orders
+        self.order_scale_factor = order_scale_factor
         
         # 1. Load Configuration ONCE to memory
         self.restaurants = self._load_restaurants(restaurants_json) if restaurants_json else {}
@@ -125,6 +134,7 @@ class SkyBitesEnv(gym.Env):
         self.drones = []
         self.active_orders = []
         self.completed_orders = 0
+        self.assigned_orders = 0  # Orders assigned to drones
         self.failed_orders = 0  # Orders that couldn't be completed due to battery
         self.total_reward = 0.0
     
@@ -280,7 +290,10 @@ class SkyBitesEnv(gym.Env):
                 "flight_duration": None,
                 "start_loc": None,
                 "target_loc": None,
-                "flight_energy_req": None  # Total energy for this flight
+                "flight_energy_req": None,  # Total energy for this flight
+                "crash_penalized": False,  # Track if crash penalty has been applied
+                "chaining": False,  # Track if drone is in automatic chaining mode
+                "chain_target": None  # Next target in the chain (dropoff pad, then base)
             }
             self.drones.append(drone_state)
             
@@ -290,11 +303,14 @@ class SkyBitesEnv(gym.Env):
         # 3. Reset Orders
         self.active_orders = []  # Orders currently spawned but not picked up
         self.completed_orders = 0
+        self.assigned_orders = 0
         self.failed_orders = 0
         self.total_reward = 0.0
         self._last_completed_count = 0  # Track for incremental reward
+        self._last_assigned_count = 0  # Track for incremental reward (assignment)
         self._last_failed_count = 0  # Track for incremental reward
         self._step_failed_orders = 0  # Track failures in current step
+        self._step_assigned_orders = 0  # Track assignments in current step
         
         # Start the order spawner process
         self.simpy_env.process(self._order_spawner())
@@ -377,7 +393,6 @@ class SkyBitesEnv(gym.Env):
         can_complete = drone['battery'] >= total_energy
         
         return can_complete, total_energy
-
     def step(self, actions):
         """
         Execute one step of the environment.
@@ -392,14 +407,20 @@ class SkyBitesEnv(gym.Env):
         for drone_idx, target_node_id in enumerate(actions):
             drone = self.drones[drone_idx]
             
+            # Skip drones that are in automatic chaining mode (they handle their own routing)
+            if drone.get('chaining', False):
+                continue
+            
             # Only allow reassignment if drone is IDLE or CHARGING (can interrupt charging)
             if drone['status'] in [STATUS_IDLE, STATUS_CHARGING] and drone['action_event'] is not None:
                 # Safety check: If target is a restaurant, verify the drone can complete the order
                 target_node_type = self._get_node_type_from_id(target_node_id)
                 
                 if target_node_type == 'restaurant':
-                    # Check if there's an order at this restaurant
-                    order = self._find_order_at_restaurant(target_node_id, check_assigned=False)
+                    # --- FIX START: Look for UNASSIGNED orders only ---
+                    # We strictly want an order that is NOT yet assigned.
+                    order = self._find_order_at_restaurant(target_node_id, check_assigned=True)
+                    
                     if order is not None:
                         # Check if drone can complete the full mission
                         can_complete, total_energy = self._can_complete_order(
@@ -408,7 +429,6 @@ class SkyBitesEnv(gym.Env):
                         
                         if not can_complete:
                             # Drone cannot complete this order - mark as failed
-                            # Check if order is still active and not already failed
                             order_still_active = any(
                                 o.get('restaurant_id') == order.get('restaurant_id') and 
                                 o.get('timestamp_minutes') == order.get('timestamp_minutes')
@@ -417,9 +437,15 @@ class SkyBitesEnv(gym.Env):
                             if order_still_active and not order.get('failed', False):
                                 order['failed'] = True
                                 self.failed_orders += 1
-                                self._step_failed_orders += 1  # Track for this step's reward
-                            # Don't assign this task - drone stays idle
+                                self._step_failed_orders += 1
                             continue
+                        
+                        # Order can be completed - assign it to this drone
+                        # We know it is unassigned because we asked for check_assigned=True
+                        order['assigned'] = True
+                        self.assigned_orders += 1
+                        self._step_assigned_orders += 1
+                    # --- FIX END ---
                 
                 # Wake up the drone process with new target
                 if not drone['action_event'].triggered:
@@ -437,6 +463,12 @@ class SkyBitesEnv(gym.Env):
         reward = self._calculate_reward()
         terminated = self.simpy_env.now >= 24 * 3600  # End of day (24 hours)
         
+        # Update tracking counters for next step
+        self._last_completed_count = self.completed_orders
+        self._last_assigned_count = self.assigned_orders
+        self._step_assigned_orders = 0  # Reset step counter
+        self._step_failed_orders = 0  # Reset step counter
+        
         return obs, reward, terminated, False, {}
 
     def _drone_process(self, drone: Dict):
@@ -447,9 +479,14 @@ class SkyBitesEnv(gym.Env):
         drone['action_event'] = self.simpy_env.event()
         
         while True:
-            # 1. Wait for instruction from Agent (via step function)
-            drone['status'] = STATUS_IDLE
-            target_id = yield drone['action_event']
+            # 1. Wait for instruction from Agent (via step function) OR continue chaining
+            if drone.get('chaining', False) and drone.get('chain_target') is not None:
+                # Continue automatic chaining - don't wait for agent action
+                target_id = drone['chain_target']
+            else:
+                # Normal mode: wait for agent action
+                drone['status'] = STATUS_IDLE
+                target_id = yield drone['action_event']
             
             # 2. Identify Target Coordinates
             target_loc = self._get_loc_from_id(target_id)
@@ -542,16 +579,29 @@ class SkyBitesEnv(gym.Env):
             
             if target_node_type == 'restaurant':
                 # Try to pick up an order from this restaurant
-                order = self._find_order_at_restaurant(target_id)
-                if order is not None:
+                # Only pick up orders that haven't been picked up yet
+                order = self._find_order_at_restaurant(target_id, check_assigned=False)
+                if order is not None and not order.get('picked_up', False):
+                    # Mark as picked up IMMEDIATELY to prevent other drones from grabbing it
+                    order['picked_up'] = True
                     drone['payload'] = 1.0  # Assume 1 kg per order
                     drone['current_order'] = order
                     drone['status'] = STATUS_SERVICE
-                    # Service time: 30 seconds to pick up
-                    yield self.simpy_env.timeout(30)
-                    # Remove order from active queue
+                    # Remove order from active queue BEFORE yielding
                     if order in self.active_orders:
                         self.active_orders.remove(order)
+                    # Service time: 30 seconds to pick up
+                    yield self.simpy_env.timeout(30)
+                    
+                    # If auto-chaining is enabled, automatically proceed to dropoff
+                    if self.auto_chain_orders:
+                        delivery_id = order.get('delivery_location_id', '')
+                        delivery_node_id = self._get_node_id_from_pad_id(delivery_id)
+                        if delivery_node_id is not None:
+                            drone['chaining'] = True
+                            drone['chain_target'] = delivery_node_id
+                            # Continue immediately to dropoff (don't wait for agent)
+                            continue
             
             elif target_node_type == 'pad':
                 # Drop off order if carrying one
@@ -563,15 +613,27 @@ class SkyBitesEnv(gym.Env):
                     drone['status'] = STATUS_SERVICE
                     # Service time: 30 seconds to drop off
                     yield self.simpy_env.timeout(30)
+                    
+                    # If auto-chaining is enabled and still chaining, proceed to base
+                    if self.auto_chain_orders and drone.get('chaining', False):
+                        drone['chain_target'] = self.base_node_id
+                        # Continue immediately to base (don't wait for agent)
+                        continue
             
             elif target_node_type == 'base':
                 # Arrived at base - can charge here
                 # If no order and low battery, agent should keep drone here to charge
                 # The charging logic is handled when agent sends drone to base again
                 drone['status'] = STATUS_IDLE
+                
+                # If we were chaining, reset chaining state
+                if drone.get('chaining', False):
+                    drone['chaining'] = False
+                    drone['chain_target'] = None
             
-            # Reset action event for next command
-            drone['action_event'] = self.simpy_env.event()
+            # Reset action event for next command (only if not chaining)
+            if not drone.get('chaining', False):
+                drone['action_event'] = self.simpy_env.event()
 
     def _get_node_type_from_id(self, node_id: int) -> Optional[str]:
         """Get node type ('restaurant', 'pad', or 'base') from node ID."""
@@ -603,10 +665,8 @@ class SkyBitesEnv(gym.Env):
     def _find_order_at_restaurant(self, restaurant_node_id: int, check_assigned: bool = True) -> Optional[Dict]:
         """
         Find an active order waiting at a specific restaurant.
-        
-        Args:
-            restaurant_node_id: Node ID of the restaurant
-            check_assigned: If True, only return unassigned orders. If False, return any order.
+        FIXED: This creates a COPY or Reference but DOES NOT modify the 'assigned' flag.
+        Assignment must happen in step(), not here.
         """
         if restaurant_node_id >= self.num_restaurants:
             return None
@@ -617,10 +677,13 @@ class SkyBitesEnv(gym.Env):
         for order in self.active_orders:
             if order.get('restaurant_id') == restaurant_id:
                 # Check if order is already assigned to a drone
-                if not check_assigned or not order.get('assigned', False):
-                    if check_assigned:
-                        order['assigned'] = True
-                    return order
+                if check_assigned and order.get('assigned', False):
+                    continue # Skip assigned orders
+                
+                # Found a valid order! Return it.
+                # DO NOT SET order['assigned'] = True HERE!
+                return order
+                
         return None
 
     def _order_spawner(self):
@@ -632,7 +695,14 @@ class SkyBitesEnv(gym.Env):
         # Sort dataframe by time
         sorted_orders = self.orders_df.sort_values('timestamp_minutes')
         
+        # Systematic order filtering: only spawn every Nth order
+        order_index = 0
         for _, row in sorted_orders.iterrows():
+            # Only spawn if this order index matches the scale factor (every Nth order)
+            if order_index % self.order_scale_factor != 0:
+                order_index += 1
+                continue
+            order_index += 1
             spawn_time = float(row['timestamp_minutes']) * 60  # Convert to seconds
             
             # Wait until it's time for this order
@@ -651,7 +721,8 @@ class SkyBitesEnv(gym.Env):
                 'delivery_location_id': str(row.get('delivery_location_id', '')).strip(),
                 'timestamp_minutes': float(row.get('timestamp_minutes', 0)),
                 'assigned': False,
-                'spawn_time': self.simpy_env.now
+                'spawn_time': self.simpy_env.now,
+                'lateness_penalty_accumulated': 0.0  # Track accumulated lateness penalty (capped at 20)
             }
             self.active_orders.append(order_dict)
 
@@ -721,31 +792,47 @@ class SkyBitesEnv(gym.Env):
     def _calculate_reward(self) -> float:
         """
         Calculate reward for the current step.
-        +10 for each completed delivery (incremental)
-        -1 for each minute an order is late (age > 30 minutes)
+        +100 for each order assigned to a drone (incremental)
+        -1 for each minute an order is late (age > 30 minutes, capped at -20 per order)
         -100 for each crashed drone
         -5 for each failed order (drone couldn't complete due to insufficient battery, incremental)
         """
         reward = 0.0
         
-        # Reward for completed orders (incremental - only count new completions)
-        new_completions = self.completed_orders - self._last_completed_count
-        reward += new_completions * 10.0
+        # Reward for assigned orders (incremental - only count new assignments)
+        # This gives reward when order is assigned, not when delivered
+        reward += self._step_assigned_orders * 100.0
         
         # Penalty for failed orders (use step counter for immediate reward)
         reward -= self._step_failed_orders * 5.0
         
-        # Penalty for old orders
+        # Penalty for old orders (capped at -20 per order)
         current_time_min = self.simpy_env.now / 60.0
         for order in self.active_orders:
             age_minutes = current_time_min - order.get('timestamp_minutes', 0)
             if age_minutes > 30:  # Late orders
-                reward -= 1.0
+                # Calculate penalty increment (per minute)
+                penalty_increment = 0.1
+                # Cap per order: ensure total doesn't exceed 20.0
+                accumulated = order.get('lateness_penalty_accumulated', 0.0)
+                remaining_capacity = 20.0 - accumulated
+                penalty_increment = min(penalty_increment, max(0.0, remaining_capacity))
+                
+                # Update accumulated penalty and apply to reward
+                if penalty_increment > 0:
+                    order['lateness_penalty_accumulated'] = accumulated + penalty_increment
+                    reward -= penalty_increment
         
-        # Penalty for crashed drones
+        # Penalty for crashed drones (one-time penalty only)
         for drone in self.drones:
             if drone['status'] == STATUS_DEAD:
-                reward -= 100.0
+                # Check: Have we already fined this drone?
+                if not drone['crash_penalized']:
+                    reward -= 100.0  # Apply the big penalty ONCE
+                    drone['crash_penalized'] = True  # Mark as paid
+            else:
+                # Optional: If you ever implement repair logic, reset the flag here
+                pass
         
         return reward
 
@@ -946,65 +1033,71 @@ class SkyBitesEnv(gym.Env):
 class DroneActionMaskWrapper(Wrapper):
     """
     SB3-Contrib compatible wrapper.
-    Implements the required `action_masks()` method.
+    Implements the required `action_masks()` method with smart physics-based masking.
     MOVED HERE FOR MULTIPROCESSING COMPATIBILITY ON MAC.
     """
     def __init__(self, env):
         super().__init__(env)
         self.env = env
-        
+    
     def action_masks(self):
-        """
-        Returns a LIST of boolean arrays (one for each drone).
-        Required signature for MaskablePPO with MultiDiscrete action spaces.
-        
-        The action space is MultiDiscrete([num_nodes] * num_drones), so each
-        drone has exactly num_nodes actions (0 to num_nodes-1). The base is at
-        index num_nodes-1, which serves as the "stay/charge" action.
-        """
         num_drones = self.env.num_drones
         num_nodes = self.env.num_nodes
-        # Base is at index num_nodes - 1, which can be used for "stay/charge"
-        base_action_index = num_nodes - 1
+        num_restaurants = self.env.num_restaurants
+        base_node_id = num_nodes - 1
         
         masks = []
         unwrapped = self.env.unwrapped
         
-        # Safety check: if environment hasn't been reset yet, return all-true masks
-        if not hasattr(unwrapped, 'drones') or unwrapped.drones is None or len(unwrapped.drones) == 0:
-            # Environment not initialized yet - allow all actions
-            for _ in range(num_drones):
-                drone_mask = np.ones(num_nodes, dtype=bool)
-                masks.append(drone_mask)
-            return masks
+        # Safety checks for initialization
+        if not hasattr(unwrapped, 'drones') or not unwrapped.drones:
+            return [np.ones(num_nodes, dtype=bool) for _ in range(num_drones)]
         
         try:
             for drone in unwrapped.drones:
                 status = drone.get('status', STATUS_IDLE)
+                is_chaining = drone.get('chaining', False)
                 
-                # Create a mask for this specific drone
-                # Size = num_nodes (matches the action space exactly)
+                # Start with all actions BLOCKED
                 drone_mask = np.zeros(num_nodes, dtype=bool)
                 
-                if status == STATUS_IDLE:
-                    # IDLE: Can go anywhere (including base for charging)
-                    drone_mask[:] = True
+                # ---------------------------------------------------------
+                # CASE 1: Drone is locked (Chaining, Moving, Service, Dead)
+                # ---------------------------------------------------------
+                # Must force the "No-Op" action (Base/Stay)
+                if is_chaining or status in [STATUS_MOVING, STATUS_SERVICE, STATUS_DEAD]:
+                    drone_mask[base_node_id] = True
+                    masks.append(drone_mask)
+                    continue
+
+                # ---------------------------------------------------------
+                # CASE 2: Drone is Available (Idle or Charging)
+                # ---------------------------------------------------------
+                # 1. Always allow "Stay/Continue Charging" (Safety fallback)
+                drone_mask[base_node_id] = True
+                
+                # 2. Check Feasibility for Deliveries
+                # Even if charging, we only allow leaving if it can finish the job
+                for node_id in range(num_restaurants):
+                    # Check order existence and ownership
+                    order = unwrapped._find_order_at_restaurant(node_id, check_assigned=True)
                     
-                elif status == STATUS_CHARGING:
-                    # CHARGING: Can leave (go anywhere) OR continue charging at base
-                    drone_mask[:] = True
-                    
-                else:
-                    # MOVING / SERVICE / DEAD / UNKNOWN
-                    # MUST DO NOTHING - only allow staying at current location
-                    # Since we can't know the exact location, allow base (stay/charge)
-                    # In practice, the agent should learn not to change actions when moving
-                    drone_mask[base_action_index] = True
+                    if order:
+                        # Physics Check: Loc -> Restaurant -> Dest -> Base
+                        # This works for charging drones too (start_loc = base)
+                        can_do, _ = unwrapped._can_complete_order(drone, node_id, order)
+                        
+                        if can_do:
+                            drone_mask[node_id] = True
                 
                 masks.append(drone_mask)
-        except (AttributeError, KeyError, TypeError):
-            # Fallback if accessing drone state fails (e.g., during pickling)
-            # Return all-true masks to allow all actions
-            masks = [np.ones(num_nodes, dtype=bool) for _ in range(num_drones)]
+
+        except Exception as e:
+            # Emergency fallback to prevent crash, but default to STAY (safe)
+            # rather than "Allow All" (unsafe)
+            print(f"Mask Error: {e}")
+            safe_mask = np.zeros(num_nodes, dtype=bool)
+            safe_mask[base_node_id] = True
+            masks = [safe_mask for _ in range(num_drones)]
             
         return masks

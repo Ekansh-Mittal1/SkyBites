@@ -10,7 +10,9 @@ for RL training.
 import json
 import csv
 import argparse
+import copy
 import numpy as np
+import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
 
@@ -277,10 +279,19 @@ def simulate_orders(
         'delivery_latitude', 'delivery_longitude', 'delivery_location_id', 'delivery_location_name'
     ]
     
+    # Ensure fieldnames are clean (strip any accidental spaces)
+    fieldnames = [f.strip() for f in fieldnames]
+    
+    # Also ensure order dictionary keys are clean (strip spaces from keys)
+    cleaned_orders = []
+    for order in all_orders:
+        cleaned_order = {k.strip(): v for k, v in order.items()}
+        cleaned_orders.append(cleaned_order)
+    
     with open(output_path, 'w', newline='') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(all_orders)
+        writer.writerows(cleaned_orders)
     
     print(f"Generated {len(all_orders)} orders")
     print(f"Output written to: {output_path}")
@@ -337,6 +348,61 @@ def main():
         duration_hours=args.duration,
         delivery_destinations_path=delivery_dest_path
     )
+
+
+def generate_random_day(restaurants_config, pads_config, duration_hours=24):
+    """
+    Generates a DataFrame of orders in-memory for a single episode.
+    
+    Args:
+        restaurants_config: List of restaurant configuration dictionaries
+        pads_config: List of delivery destination configuration dictionaries
+        duration_hours: Duration of the simulation in hours (default: 24)
+    
+    Returns:
+        pandas.DataFrame with columns: order_id, restaurant_id, timestamp_minutes,
+        delivery_location_id, delivery_latitude, delivery_longitude,
+        restaurant_latitude, restaurant_longitude
+    """
+    # Normalize delivery destination proportions if needed
+    # (reuse the normalization logic from load_delivery_destinations)
+    # Make a copy to avoid modifying the original config
+    if pads_config:
+        pads_config = copy.deepcopy(pads_config)
+        total_proportion = sum(d.get('proportion', 0) for d in pads_config)
+        if total_proportion > 0:
+            for d in pads_config:
+                d['proportion'] = d.get('proportion', 0) / total_proportion
+        else:
+            # If all proportions are 0, set equal weights
+            equal_weight = 1.0 / len(pads_config) if pads_config else 1.0
+            for d in pads_config:
+                d['proportion'] = equal_weight
+    
+    start_time = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    all_orders = []
+    order_id_counter = 1
+    
+    for restaurant in restaurants_config:
+        orders, order_id_counter = generate_orders_for_restaurant(
+            restaurant, 
+            start_time, 
+            duration_hours, 
+            order_id_counter, 
+            pads_config
+        )
+        all_orders.extend(orders)
+    
+    # Create DataFrame directly
+    if not all_orders:
+        return pd.DataFrame(columns=[
+            'order_id', 'restaurant_id', 'timestamp_minutes', 
+            'delivery_location_id', 'delivery_latitude', 'delivery_longitude',
+            'restaurant_latitude', 'restaurant_longitude'
+        ])
+    
+    df = pd.DataFrame(all_orders)
+    return df.sort_values('timestamp_minutes')
 
 
 if __name__ == '__main__':
