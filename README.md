@@ -18,7 +18,6 @@ SkyBites is a reinforcement learning (RL) system for optimizing drone fleet oper
 - [Key Components](#key-components)
 - [Environment Details](#environment-details)
 - [Training Details](#training-details)
-- [Troubleshooting](#troubleshooting)
 
 ## Overview
 
