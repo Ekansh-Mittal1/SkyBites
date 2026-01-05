@@ -1,12 +1,4 @@
 #!/usr/bin/env python3
-"""
-Order Simulation Script for RL-Based Drone VRP
-
-This script simulates restaurant orders based on restaurant configurations,
-operating hours, and average orders per hour. Outputs CSV format optimized
-for RL training.
-"""
-
 import json
 import csv
 import argparse
@@ -18,62 +10,12 @@ from typing import List, Dict, Any
 
 
 def load_restaurant_config(config_path: str) -> List[Dict[str, Any]]:
-    """
-    Load restaurant configuration from JSON file.
-    
-    Expected schema:
-    [
-        {
-            "restaurant_id": str or int,
-            "name": str,
-            "operating_hours": {
-                "start_hour": int (0-23),
-                "end_hour": int (0-23)
-            },
-            "hourly_order_rates": {
-                "0": float,  # orders per hour for hour 0 (midnight-1am)
-                "1": float,  # orders per hour for hour 1 (1am-2am)
-                ...
-                "23": float  # orders per hour for hour 23 (11pm-midnight)
-            }
-            OR
-            "avg_orders_per_hour": float  # fallback if hourly_order_rates not provided
-            "location": {
-                "latitude": float,
-                "longitude": float
-            }
-        },
-        ...
-    ]
-    
-    Schema is extensible - additional fields can be added without breaking
-    existing code (e.g., order_value, prep_time).
-    """
     with open(config_path, 'r') as f:
         config = json.load(f)
     return config
 
 
 def load_delivery_destinations(config_path: str) -> List[Dict[str, Any]]:
-    """
-    Load delivery destinations configuration from JSON file.
-    
-    Expected schema:
-    [
-        {
-            "destination_id": str,
-            "name": str,
-            "location": {
-                "latitude": float,
-                "longitude": float
-            },
-            "proportion": float  # relative weight (will be normalized to sum to 1.0)
-        },
-        ...
-    ]
-    
-    Proportions are automatically normalized so they sum to 1.0.
-    """
     with open(config_path, 'r') as f:
         destinations = json.load(f)
     
@@ -92,15 +34,6 @@ def load_delivery_destinations(config_path: str) -> List[Dict[str, Any]]:
 
 
 def assign_delivery_location(destinations: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Assign a delivery location to an order proportionally based on destination proportions.
-    
-    Args:
-        destinations: List of destination dictionaries with 'proportion' field
-        
-    Returns:
-        Selected destination dictionary
-    """
     destination_ids = [d['destination_id'] for d in destinations]
     proportions = [d['proportion'] for d in destinations]
     
@@ -120,19 +53,6 @@ def generate_orders_for_restaurant(
     order_id_counter: int,
     delivery_destinations: List[Dict[str, Any]] = None
 ) -> List[Dict[str, Any]]:
-    """
-    Generate orders for a single restaurant using Poisson process.
-    
-    Args:
-        restaurant: Restaurant configuration dictionary
-        start_time: Simulation start datetime
-        duration_hours: Total simulation duration in hours
-        order_id_counter: Starting order ID counter
-        delivery_destinations: Optional list of delivery destinations for assignment
-        
-    Returns:
-        List of order dictionaries and updated order_id_counter
-    """
     orders = []
     restaurant_id = restaurant['restaurant_id']
     restaurant_name = restaurant['name']
@@ -232,16 +152,6 @@ def simulate_orders(
     duration_hours: int = 24,
     delivery_destinations_path: str = None
 ) -> None:
-    """
-    Main simulation function.
-    
-    Args:
-        config_path: Path to restaurant configuration JSON file
-        output_path: Path to output CSV file
-        start_time: Simulation start time (default: current time)
-        duration_hours: Simulation duration in hours (default: 24)
-        delivery_destinations_path: Optional path to delivery destinations JSON file
-    """
     # Load restaurant configurations
     restaurants = load_restaurant_config(config_path)
     
@@ -351,19 +261,6 @@ def main():
 
 
 def generate_random_day(restaurants_config, pads_config, duration_hours=24):
-    """
-    Generates a DataFrame of orders in-memory for a single episode.
-    
-    Args:
-        restaurants_config: List of restaurant configuration dictionaries
-        pads_config: List of delivery destination configuration dictionaries
-        duration_hours: Duration of the simulation in hours (default: 24)
-    
-    Returns:
-        pandas.DataFrame with columns: order_id, restaurant_id, timestamp_minutes,
-        delivery_location_id, delivery_latitude, delivery_longitude,
-        restaurant_latitude, restaurant_longitude
-    """
     # Normalize delivery destination proportions if needed
     # (reuse the normalization logic from load_delivery_destinations)
     # Make a copy to avoid modifying the original config
@@ -407,4 +304,3 @@ def generate_random_day(restaurants_config, pads_config, duration_hours=24):
 
 if __name__ == '__main__':
     main()
-

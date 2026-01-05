@@ -14,9 +14,6 @@ from env import SkyBitesEnv, DroneActionMaskWrapper
 
 def make_eval_env(restaurants_json, pads_json, num_drones, 
                   auto_chain_orders, order_scale_factor):
-    """
-    Creates the evaluation environment with dynamic generation.
-    """
     env = SkyBitesEnv(
         orders_csv=None,  # Not needed for dynamic generation
         restaurants_json=restaurants_json,
@@ -95,6 +92,13 @@ def evaluate(args):
         prev_failed_count = 0
         prev_active_orders = set()
         
+        # Track completions incrementally (since env resets on done, we need to track ourselves)
+        episode_completed_tracked = 0
+        episode_failed_tracked = 0
+        
+        # Will capture completed_order_info incrementally
+        episode_completed_order_info = []
+        
         # Collect all orders that will spawn
         if internal_env.orders_df is not None:
             for idx, row in internal_env.orders_df.iterrows():
@@ -113,13 +117,14 @@ def evaluate(args):
         
         while not done:
             # CRITICAL FIX: Get action masks and pass to predict
-            # env.envs[0] is the DroneActionMaskWrapper (has action_masks method)
-            masks = env.envs[0].action_masks()
+            # env.envs[0] is Monitor, env.envs[0].env is DroneActionMaskWrapper
+            mask_wrapper = env.envs[0].env
+            masks = mask_wrapper.action_masks()
             action, _ = model.predict(obs, deterministic=True, 
                                       action_masks=np.array(masks).flatten())
             
             # Track internal stats BEFORE step (this captures the state before auto-reset)
-            internal_env = env.envs[0].env.unwrapped
+            internal_env = mask_wrapper.env.unwrapped
             current_time = internal_env.simpy_env.now / 60.0  # Convert to minutes
             
             # Track current active orders
@@ -207,15 +212,40 @@ def evaluate(args):
             total_reward += reward[0]
             step_count += 1
             
+            # Read current counts AFTER step (before environment potentially resets)
+            current_completed = internal_env.completed_orders
+            current_failed = internal_env.failed_orders
+            
+            # Track completions and failures incrementally
+            if current_completed > prev_completed_count:
+                episode_completed_tracked += (current_completed - prev_completed_count)
+            if current_failed > prev_failed_count:
+                episode_failed_tracked += (current_failed - prev_failed_count)
+            
             # Update previous counts
             prev_assigned_count = internal_env.assigned_orders
-            prev_completed_count = internal_env.completed_orders
-            prev_failed_count = internal_env.failed_orders
+            prev_completed_count = current_completed
+            prev_failed_count = current_failed
             prev_active_orders = current_active_order_ids.copy()
+            
+            # Capture completed_order_info BEFORE environment potentially resets
+            current_completed_order_info = getattr(internal_env, 'completed_order_info', [])
+            if len(current_completed_order_info) > len(episode_completed_order_info):
+                episode_completed_order_info = current_completed_order_info.copy()
+            
+            if done[0]:
+                break
         
-        # Episode is done - use pre_step values (captured before the auto-reset)
-        episode_completed = prev_completed_count
-        episode_failed = prev_failed_count
+        # Use tracked values (captured incrementally during episode)
+        episode_completed = episode_completed_tracked
+        episode_failed = episode_failed_tracked
+        
+        # Extract delay statistics from captured completed_order_info
+        delays = [order_info['delay_minutes'] for order_info in episode_completed_order_info] if episode_completed_order_info else []
+        avg_delay = np.mean(delays) if delays else 0.0
+        median_delay = np.median(delays) if delays else 0.0
+        on_time_count = sum(1 for d in delays if d <= 0)  # On-time if delay <= 0
+        on_time_rate = (on_time_count / len(delays) * 100) if delays else 0.0
         
         # Get final reward from Monitor wrapper (survives auto-reset)
         if 'episode' in info[0]:
@@ -232,7 +262,10 @@ def evaluate(args):
             "Orders Spawned": total_spawned,
             "Completed": episode_completed,
             "Failed": episode_failed,
-            "Fulfillment Rate %": rate
+            "Fulfillment Rate %": rate,
+            "Avg Delay (min)": avg_delay,
+            "Median Delay (min)": median_delay,
+            "On-Time Rate %": on_time_rate
         })
         
         # Store episode data
@@ -345,19 +378,27 @@ def evaluate(args):
         f.write("="*80 + "\n")
         f.write(f"Mean Reward: {df['Total Reward'].mean():.1f}\n")
         f.write(f"Mean Completion Rate: {df['Fulfillment Rate %'].mean():.1f}%\n")
+        if 'Avg Delay (min)' in df.columns:
+            f.write(f"Mean Avg Delay: {df['Avg Delay (min)'].mean():.1f} min\n")
+            f.write(f"Mean Median Delay: {df['Median Delay (min)'].mean():.1f} min\n")
+            f.write(f"Mean On-Time Rate: {df['On-Time Rate %'].mean():.1f}%\n")
         f.write("="*80 + "\n")
     
     print(f"Summary report saved to: {summary_filename}")
     
     # Print summary to console
-    print("\n" + "="*50)
+    print("\n" + "="*80)
     print("FINAL EVALUATION REPORT")
-    print("="*50)
+    print("="*80)
     print(df.to_string(index=False))
-    print("\n" + "="*50)
+    print("\n" + "="*80)
     print(f"Mean Reward: {df['Total Reward'].mean():.1f}")
     print(f"Mean Completion Rate: {df['Fulfillment Rate %'].mean():.1f}%")
-    print("="*50)
+    if 'Avg Delay (min)' in df.columns:
+        print(f"Mean Avg Delay: {df['Avg Delay (min)'].mean():.1f} min")
+        print(f"Mean Median Delay: {df['Median Delay (min)'].mean():.1f} min")
+        print(f"Mean On-Time Rate: {df['On-Time Rate %'].mean():.1f}%")
+    print("="*80)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
