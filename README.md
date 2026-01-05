@@ -1,5 +1,7 @@
 # SkyBites: Reinforcement Learning for Drone Delivery Vehicle Routing Problem
 
+[View our final paper here](https://drive.google.com/file/d/1kELwjyp5n3pmg8QKiyyxayAfrYWAhnqL/view)
+
 SkyBites is a reinforcement learning (RL) system for optimizing drone fleet operations in a food delivery scenario. The project uses Proximal Policy Optimization (PPO) with action masking to train agents that coordinate multiple drones to pick up orders from restaurants and deliver them to customer locations while managing battery constraints and charging schedules.
 
 ## Table of Contents
